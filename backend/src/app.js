@@ -36,4 +36,6 @@ app.use((err, _req, res, _next) => {
     res.status(500).json({ error: "Internal server error", code: "SERVER_ERROR" });
 });
 
+app.use("/api/reservations", require("./routes/reservations"));
+
 module.exports = app;
