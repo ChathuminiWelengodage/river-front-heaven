@@ -14,7 +14,7 @@ export default function Dashboard() {
     return (
         <div>
             <h1 className="text-4xl font-extrabold">Dashboard</h1>
-            <p className="mt-2 text-muted">Welcome, {user.fullName}. A clear view of arrivals, stays and service.</p>
+            <p className="mt-2 text-muted">Welcome, {user?.fullName || "Staff"}. A clear view of arrivals, stays and service.</p>
 
             <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 {CARDS.map((c) => (

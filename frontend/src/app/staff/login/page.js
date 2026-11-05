@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Waves, ShieldCheck, Eye, EyeOff, CircleAlert } from "lucide-react";
+import { Waves, ShieldCheck, Eye, EyeOff, CircleAlert, Sparkles } from "lucide-react";
 import { api, setToken } from "@/lib/api";
 
 export default function StaffLogin() {
@@ -21,15 +21,25 @@ export default function StaffLogin() {
             setToken(data.token);
             router.replace("/staff");
         } catch (err) {
-            if (!err.status) setError("Cannot reach the server. Is the backend running?");
-            else if (err.status === 401) setError("Incorrect username or password");
-            else setError(err.message);
+            if (!err.status) {
+                setError("Cannot reach the server. Is the backend running? You can also use Demo Mode below.");
+            } else if (err.status === 401) {
+                setError("Incorrect username or password");
+            } else {
+                setError(err.message);
+            }
             setLoading(false);
         }
     }
 
-    const input = `h-14 w-full rounded-xl border px-4 outline-none focus:ring-2 focus:ring-brand/30 ${error ? "border-red-600" : "border-line"
-        }`;
+    function onDemoLogin() {
+        setToken("demo_staff_token");
+        router.replace("/staff/reservations");
+    }
+
+    const input = `h-14 w-full rounded-xl border px-4 outline-none focus:ring-2 focus:ring-brand/30 ${
+        error ? "border-red-600" : "border-line"
+    }`;
 
     return (
         <div className="min-h-screen bg-surface p-4">
@@ -69,6 +79,14 @@ export default function StaffLogin() {
 
                     <button type="submit" disabled={loading} className="mt-5 h-14 w-full rounded-xl bg-accent font-bold hover:bg-accent-dark disabled:opacity-60">
                         {loading ? "Signing in..." : "Sign in"}
+                    </button>
+
+                    <button
+                        type="button"
+                        onClick={onDemoLogin}
+                        className="mt-3 flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-brand/30 bg-brand-soft/50 font-bold text-brand hover:bg-brand-soft"
+                    >
+                        <Sparkles size={16} /> Enter Demo Mode (Front Desk)
                     </button>
 
                     {error && (
