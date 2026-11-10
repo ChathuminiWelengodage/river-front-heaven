@@ -41,16 +41,15 @@ export default function StaffShell({ children }) {
         router.replace("/staff/login");
     }
 
-    if (!user) return <Loading />;
 
-    const isAdmin = user.role === "ADMIN";
+    const isAdmin = user?.role === "ADMIN";
     const menu = NAV.filter((item) => !item.adminOnly || isAdmin);
     const isActive = (href) => (href === "/staff" ? pathname === href : pathname.startsWith(href));
     const current = menu.find((item) => isActive(item.href));
 
     return (
         <StaffContext.Provider value={user}>
-            <div className="flex min-h-screen">
+            <div className="flex min-h-screen" hidden={!user}>
                 <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col bg-brand p-4 text-white lg:flex">
                     <div className="px-3 pb-6 pt-3">
                         <span className="grid size-11 place-items-center rounded-full border border-white/70">
@@ -81,7 +80,7 @@ export default function StaffShell({ children }) {
                                 <UserRound size={20} />
                             </span>
                             <div className="min-w-0">
-                                <div className="truncate font-semibold">{user.fullName}</div>
+                                <div className="truncate font-semibold">{user?.fullName || "Loading..."}</div>
                                 <div className="text-sm text-white/70">{isAdmin ? "Administrator" : "Front desk"}</div>
                             </div>
                         </div>
