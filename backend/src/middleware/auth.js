@@ -4,7 +4,8 @@ const asyncHandler = require("../utils/asyncHandler");
 const { verifyToken } = require("../services/tokens");
 
 const authenticate = asyncHandler(async (req, res, next) => {
-    const [schema, token] = (req.headers.authorization || "").split(" ");
+    const authHeader = req.headers.authorization || (req.query.token ? `Bearer ${req.query.token}` : "");
+    const [schema, token] = authHeader.split(" ");
     if (schema !== "Bearer" || !token) {
         throw new HttpError(401, "Please Login", "UNAUTHENTICATED");
     }

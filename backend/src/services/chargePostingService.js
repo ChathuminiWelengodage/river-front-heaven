@@ -1,6 +1,7 @@
 const prisma = require("../db");
 const HttpError = require("../utils/httpError");
 const parseId = require("../utils/parseId");
+const invoicePdfService = require("./invoicePdfService");
 
 /**
  * Calculates stay nights between check-in and check-out dates.
@@ -30,7 +31,8 @@ function calculateNights(checkInDate, checkOutDate) {
  */
 async function resolveReservation(
   identifier,
-  db = prisma
+  db = prisma,
+  options = {}
 ) {
   const params =
     typeof identifier === "object" && identifier !== null
@@ -39,16 +41,23 @@ async function resolveReservation(
   const { reservationId, reservationReference, guestId, cabanaId } = params;
   let reservation = null;
 
+  const includeRelations = {
+    guest: true,
+    package: true,
+    cabana: true,
+    invoice: { include: { issuedBy: true } },
+  };
+
   if (reservationId !== undefined && reservationId !== null) {
     const id = parseId(reservationId);
     reservation = await db.reservation.findUnique({
       where: { id },
-      include: { guest: true, package: true, cabana: true, invoice: true },
+      include: includeRelations,
     });
   } else if (reservationReference) {
     reservation = await db.reservation.findUnique({
       where: { reference: String(reservationReference).trim() },
-      include: { guest: true, package: true, cabana: true, invoice: true },
+      include: includeRelations,
     });
   } else if (cabanaId !== undefined && cabanaId !== null) {
     const cId = parseId(cabanaId);
@@ -59,7 +68,7 @@ async function resolveReservation(
         status: { in: ["CHECKED_IN", "CONFIRMED"] },
       },
       orderBy: { checkInDate: "desc" },
-      include: { guest: true, package: true, cabana: true, invoice: true },
+      include: includeRelations,
     });
     if (!reservation) {
       throw new HttpError(404, "No active stay found for this cabana", "NO_ACTIVE_RESERVATION");
@@ -73,7 +82,7 @@ async function resolveReservation(
         status: { in: ["CHECKED_IN", "CONFIRMED"] },
       },
       orderBy: { checkInDate: "desc" },
-      include: { guest: true, package: true, cabana: true, invoice: true },
+      include: includeRelations,
     });
 
     if (activeStays.length === 0) {
@@ -120,7 +129,7 @@ async function resolveReservation(
   }
 
   // Check if invoice has already been issued
-  if (reservation.invoice) {
+  if (!options.allowClosed && reservation.invoice) {
     throw new HttpError(
       409,
       `Bill for reservation ${reservation.reference} is already finalized (Invoice: ${reservation.invoice.invoiceNumber})`,
@@ -752,7 +761,7 @@ async function getGuestBill(reservationIdentifier, _options = {}, db = prisma) {
   let reservation;
 
   if (typeof reservationIdentifier === "object") {
-    reservation = await resolveReservation(reservationIdentifier, db);
+    reservation = await resolveReservation(reservationIdentifier, db, { allowClosed: true });
     resId = reservation.id;
   } else {
     resId = parseId(reservationIdentifier);
@@ -762,7 +771,9 @@ async function getGuestBill(reservationIdentifier, _options = {}, db = prisma) {
         guest: true,
         package: true,
         cabana: true,
-        invoice: true,
+        invoice: {
+          include: { issuedBy: true },
+        },
       },
     });
     if (!reservation) {
@@ -1009,6 +1020,7 @@ async function getGuestBill(reservationIdentifier, _options = {}, db = prisma) {
             idNumber: reservation.guest.idNumber,
             phone: reservation.guest.phone,
             email: reservation.guest.email,
+            address: reservation.guest.address,
           }
         : null,
       isFinalized: Boolean(reservation.invoice),
@@ -1204,6 +1216,83 @@ async function listActiveStaysWithBalances(db = prisma) {
   return stays;
 }
 
+/**
+ * Generates an official or pro-forma PDF invoice for a reservation.
+ *
+ * @param {number|string|Object} reservationIdentifier - Reservation ID, Reference, or identifier object
+ * @param {Object} options - PDF generation options
+ * @param {Object} db - Database client (default: prisma)
+ * @returns {Promise<{ buffer: Buffer, filename: string, invoiceNumber: string, bill: Object }>}
+ */
+async function generateInvoicePdf(reservationIdentifier, options = {}, db = prisma) {
+  const bill = await getGuestBill(reservationIdentifier, options, db);
+
+  // Fetch hotel settings for branding & contact info
+  const settingKeys = ["hotel_phone", "hotel_email", "hotel_address", "whatsapp_number"];
+  const settingsRows = await db.setting.findMany({
+    where: { key: { in: settingKeys } },
+  });
+
+  const hotelSettings = {};
+  for (const row of settingsRows) {
+    hotelSettings[row.key] = row.value;
+  }
+
+  const pdfBuffer = await invoicePdfService.generateInvoicePdfBuffer(bill, {
+    hotelSettings,
+    ...options,
+  });
+
+  const invoiceNumber =
+    bill.reservation?.invoice?.invoiceNumber ||
+    `FOLIO-${bill.reservation?.reference || "RFH"}`;
+
+  return {
+    buffer: pdfBuffer,
+    invoiceNumber,
+    filename: `Invoice-${invoiceNumber}.pdf`,
+    bill,
+  };
+}
+
+/**
+ * Retrieves an invoice by invoiceNumber or ID.
+ */
+async function getInvoice(identifier, db = prisma) {
+  let invoice = null;
+  const numId = Number(identifier);
+
+  if (!isNaN(numId) && Number.isInteger(numId) && numId > 0 && String(identifier).length < 10) {
+    invoice = await db.invoice.findFirst({
+      where: {
+        OR: [{ id: numId }, { invoiceNumber: String(identifier).trim() }],
+      },
+      include: {
+        reservation: {
+          include: { guest: true, cabana: true, package: true },
+        },
+        issuedBy: true,
+      },
+    });
+  } else {
+    invoice = await db.invoice.findUnique({
+      where: { invoiceNumber: String(identifier).trim() },
+      include: {
+        reservation: {
+          include: { guest: true, cabana: true, package: true },
+        },
+        issuedBy: true,
+      },
+    });
+  }
+
+  if (!invoice) {
+    throw new HttpError(404, `Invoice "${identifier}" not found`, "INVOICE_NOT_FOUND");
+  }
+
+  return invoice;
+}
+
 module.exports = {
   calculateNights,
   resolveReservation,
@@ -1219,4 +1308,7 @@ module.exports = {
   syncGuestBill,
   finalizeBillAndCheckout,
   listActiveStaysWithBalances,
+  generateInvoicePdf,
+  getInvoice,
+  invoicePdfService,
 };

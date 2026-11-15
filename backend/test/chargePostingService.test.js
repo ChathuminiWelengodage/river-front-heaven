@@ -279,6 +279,40 @@ function createMockDb(initialData = {}) {
       },
     },
     invoice: {
+      findUnique: async ({ where }) => {
+        const inv = db.invoices.find(
+          (i) =>
+            (where.id && i.id === where.id) ||
+            (where.invoiceNumber && i.invoiceNumber === where.invoiceNumber) ||
+            (where.reservationId && i.reservationId === where.reservationId)
+        );
+        if (!inv) return null;
+        return {
+          ...inv,
+          reservation: db.reservations.find((r) => r.id === inv.reservationId) || null,
+          issuedBy: { id: inv.issuedById || 1, fullName: "Staff User" },
+        };
+      },
+      findFirst: async ({ where }) => {
+        const inv = db.invoices.find((i) => {
+          if (where.OR) {
+            return where.OR.some(
+              (cond) =>
+                (cond.id && i.id === cond.id) ||
+                (cond.invoiceNumber && i.invoiceNumber === cond.invoiceNumber)
+            );
+          }
+          if (where.id && i.id !== where.id) return false;
+          if (where.invoiceNumber && i.invoiceNumber !== where.invoiceNumber) return false;
+          return true;
+        });
+        if (!inv) return null;
+        return {
+          ...inv,
+          reservation: db.reservations.find((r) => r.id === inv.reservationId) || null,
+          issuedBy: { id: inv.issuedById || 1, fullName: "Staff User" },
+        };
+      },
       create: async ({ data }) => {
         const newRecord = { id: ++autoId, ...data, issuedAt: new Date() };
         db.invoices.push(newRecord);
@@ -938,4 +972,126 @@ test("finalizeBillAndCheckout creates Invoice snapshot and marks CHECKED_OUT", a
   const updatedReservation = await mockDb.reservation.findUnique({ where: { id: 1 } });
   assert.strictEqual(updatedReservation.status, "CHECKED_OUT");
   assert.strictEqual(updatedReservation.portalActive, false);
+});
+
+test("generateInvoicePdf generates valid PDF buffer with %PDF- header for active pro-forma folio", async () => {
+  const mockDb = createMockDb({
+    guests: [{ id: 10, fullName: "Kasun Perera", idNumber: "198512345678", phone: "0771234567" }],
+    reservations: [
+      {
+        id: 1,
+        reference: "RFH-1001",
+        guestId: 10,
+        cabanaId: 1,
+        packageId: 1,
+        status: "CHECKED_IN",
+        checkInDate: new Date("2026-11-10"),
+        checkOutDate: new Date("2026-11-12"), // 2 nights @ 15000 = 30000
+        nightlyRate: 15000,
+        createdById: 1,
+      },
+    ],
+    activityBookings: [
+      {
+        id: 101,
+        reservationId: 1,
+        activityId: 1,
+        scheduledAt: new Date("2026-11-11T09:00:00Z"),
+        participants: 2,
+        unitPriceAtBooking: 5000,
+        totalCharge: 10000,
+        status: "BOOKED",
+      },
+    ],
+    barOrders: [
+      {
+        id: 201,
+        reservationId: 1,
+        barItemId: 1,
+        quantity: 2,
+        unitPriceAtOrder: 900,
+        totalCost: 1800,
+        createdAt: new Date(),
+      },
+    ],
+    adjustments: [
+      {
+        id: 301,
+        reservationId: 1,
+        description: "Promotional Discount",
+        amount: -1500,
+        reason: "Early booking discount",
+        createdAt: new Date(),
+      },
+    ],
+    payments: [
+      {
+        id: 401,
+        reservationId: 1,
+        amount: 20000,
+        method: "BANK_TRANSFER",
+        isAdvance: true,
+        paidAt: new Date(),
+        note: "Advance Deposit",
+      },
+    ],
+  });
+
+  const pdfResult = await chargePostingService.generateInvoicePdf(1, {}, mockDb);
+  assert.ok(pdfResult.buffer instanceof Buffer, "Should return a Buffer");
+  assert.ok(pdfResult.buffer.length > 500, "PDF buffer should contain generated content");
+  // Check PDF signature '%PDF-'
+  const header = pdfResult.buffer.subarray(0, 5).toString("ascii");
+  assert.strictEqual(header, "%PDF-");
+  assert.ok(pdfResult.filename.includes("RFH-1001"));
+  assert.strictEqual(pdfResult.bill.reservation.reference, "RFH-1001");
+  assert.strictEqual(pdfResult.bill.financials.paymentStatus, "PARTIALLY_PAID");
+});
+
+test("generateInvoicePdf generates official tax invoice PDF for finalized checkout", async () => {
+  const mockDb = createMockDb({
+    guests: [{ id: 10, fullName: "Amara Silva", idNumber: "200012345678" }],
+    reservations: [
+      {
+        id: 2,
+        reference: "RFH-2002",
+        guestId: 10,
+        cabanaId: 1,
+        packageId: 1,
+        status: "CHECKED_IN",
+        checkInDate: new Date("2026-11-10"),
+        checkOutDate: new Date("2026-11-11"),
+        nightlyRate: 15000,
+        createdById: 1,
+      },
+    ],
+  });
+
+  // Finalize bill first
+  const checkout = await chargePostingService.finalizeBillAndCheckout(2, { userId: 1 }, mockDb);
+  assert.strictEqual(checkout.success, true);
+  const invNumber = checkout.invoice.invoiceNumber;
+
+  // Generate PDF for finalized reservation
+  const pdfResult = await chargePostingService.generateInvoicePdf(2, {}, mockDb);
+  assert.ok(pdfResult.buffer instanceof Buffer);
+  assert.strictEqual(pdfResult.buffer.subarray(0, 5).toString("ascii"), "%PDF-");
+  assert.strictEqual(pdfResult.invoiceNumber, invNumber);
+  assert.strictEqual(pdfResult.filename, `Invoice-${invNumber}.pdf`);
+  assert.strictEqual(pdfResult.bill.reservation.isFinalized, true);
+
+  // Retrieve invoice via getInvoice
+  const fetchedInv = await chargePostingService.getInvoice(invNumber, mockDb);
+  assert.strictEqual(fetchedInv.invoiceNumber, invNumber);
+  assert.strictEqual(fetchedInv.reservationId, 2);
+});
+
+test("getInvoice throws 404 for non-existent invoice", async () => {
+  const mockDb = createMockDb();
+  await assert.rejects(
+    async () => {
+      await chargePostingService.getInvoice("INV-NONEXISTENT", mockDb);
+    },
+    (err) => err.status === 404 && err.code === "INVOICE_NOT_FOUND"
+  );
 });

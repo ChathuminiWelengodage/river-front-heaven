@@ -251,4 +251,71 @@ router.post(
   })
 );
 
+// Get invoice metadata for a reservation
+router.get(
+  "/reservations/:id/invoice",
+  staff,
+  asyncHandler(async (req, res) => {
+    const bill = await chargePostingService.getGuestBill(parseId(req.params.id));
+    if (!bill.reservation.invoice) {
+      return res.json({
+        hasInvoice: false,
+        bill,
+      });
+    }
+    res.json({
+      hasInvoice: true,
+      invoice: bill.reservation.invoice,
+      bill,
+    });
+  })
+);
+
+// Generate and stream PDF invoice / folio for a reservation
+router.get(
+  "/reservations/:id/invoice/pdf",
+  staff,
+  asyncHandler(async (req, res) => {
+    const { buffer, filename } = await chargePostingService.generateInvoicePdf(
+      parseId(req.params.id)
+    );
+
+    const disposition = req.query.download === "true" ? "attachment" : "inline";
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `${disposition}; filename="${filename}"`);
+    res.setHeader("Content-Length", buffer.length);
+    res.send(buffer);
+  })
+);
+
+// Generate and stream PDF invoice by invoice number or ID
+router.get(
+  "/invoices/:invoiceNumber/pdf",
+  staff,
+  asyncHandler(async (req, res) => {
+    const invoice = await chargePostingService.getInvoice(req.params.invoiceNumber);
+    const { buffer, filename } = await chargePostingService.generateInvoicePdf(
+      invoice.reservationId
+    );
+
+    const disposition = req.query.download === "true" ? "attachment" : "inline";
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `${disposition}; filename="${filename}"`);
+    res.setHeader("Content-Length", buffer.length);
+    res.send(buffer);
+  })
+);
+
+// Get invoice details by invoice number
+router.get(
+  "/invoices/:invoiceNumber",
+  staff,
+  asyncHandler(async (req, res) => {
+    const invoice = await chargePostingService.getInvoice(req.params.invoiceNumber);
+    res.json(invoice);
+  })
+);
+
 module.exports = router;

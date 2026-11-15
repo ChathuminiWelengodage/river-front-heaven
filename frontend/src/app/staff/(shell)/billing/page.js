@@ -17,8 +17,9 @@ import {
   Compass,
   DollarSign,
   ChevronRight,
+  Download,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, getToken } from "@/lib/api";
 import { Button } from "@/components/staff/ui/Button";
 import { Card } from "@/components/staff/ui/Card";
 import { Badge } from "@/components/staff/ui/Badge";
@@ -41,6 +42,8 @@ export default function BillingPage() {
   const [chargeDrawerOpen, setChargeDrawerOpen] = useState(false);
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [checkoutModalOpen, setCheckoutModalOpen] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [customInvoiceNumber, setCustomInvoiceNumber] = useState("");
 
   // Charge posting form state
   const [chargeType, setChargeType] = useState("BAR");
@@ -271,19 +274,74 @@ export default function BillingPage() {
     });
   }
 
+  // Download or preview PDF invoice/folio
+  async function handleDownloadPdf(download = false) {
+    if (!selectedResId) return;
+    setDownloadingPdf(true);
+    setError("");
+    try {
+      const token = getToken();
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000/api";
+      const url = `${apiUrl}/billing/reservations/${selectedResId}/invoice/pdf${download ? "?download=true" : ""}`;
+
+      const response = await fetch(url, {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to generate PDF invoice.");
+      }
+
+      const blob = await response.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+
+      if (download) {
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        const invoiceNumber =
+          activeBill?.reservation?.invoice?.invoiceNumber ||
+          activeBill?.reservation?.reference ||
+          "invoice";
+        a.download = `Invoice-${invoiceNumber}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setSuccessMsg("PDF Invoice downloaded successfully!");
+      } else {
+        window.open(blobUrl, "_blank");
+        setSuccessMsg("PDF Invoice opened in new tab for preview / print.");
+      }
+
+      setTimeout(() => setSuccessMsg(""), 4000);
+      setTimeout(() => window.URL.revokeObjectURL(blobUrl), 10000);
+    } catch (err) {
+      setError(err.message || "Failed to generate PDF invoice.");
+    } finally {
+      setDownloadingPdf(false);
+    }
+  }
+
   // Finalize bill and checkout
   async function handleCheckout() {
     if (!selectedResId) return;
     startTransition(async () => {
       try {
-        await api(`/billing/reservations/${selectedResId}/checkout`, {
+        const res = await api(`/billing/reservations/${selectedResId}/checkout`, {
           method: "POST",
-          body: {},
+          body: {
+            invoiceNumber: customInvoiceNumber.trim() || undefined,
+          },
         });
         setCheckoutModalOpen(false);
+        setCustomInvoiceNumber("");
         await refreshBill(selectedResId);
         await refreshStays();
-        setSuccessMsg("Bill finalized and Invoice created! Reservation marked as checked out.");
+        setSuccessMsg(
+          `Bill finalized and Invoice #${res.invoice?.invoiceNumber || ""} issued! Reservation marked as checked out.`
+        );
         setTimeout(() => setSuccessMsg(""), 5000);
       } catch (err) {
         setError(err.message || "Failed to finalize bill.");
@@ -340,6 +398,16 @@ export default function BillingPage() {
           >
             <CreditCard className="size-4" />
             Record Payment
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => handleDownloadPdf(false)}
+            disabled={!selectedResId || downloadingPdf || isPending}
+            className="h-10 text-xs sm:text-sm border-slate-300 text-slate-700 hover:bg-slate-50"
+            title="Preview or print PDF invoice/folio"
+          >
+            <FileText className="size-4 text-sky-600" />
+            PDF Invoice
           </Button>
         </div>
       </div>
@@ -465,6 +533,26 @@ export default function BillingPage() {
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => handleDownloadPdf(false)}
+                      disabled={downloadingPdf}
+                      className="h-9 px-3 text-xs flex items-center gap-1.5 border-slate-300 text-slate-700 hover:bg-slate-50"
+                      title="Preview PDF in a new tab"
+                    >
+                      <FileText className="size-4 text-sky-600" />
+                      {activeBill.reservation.isFinalized ? "View Invoice PDF" : "Preview Folio PDF"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => handleDownloadPdf(true)}
+                      disabled={downloadingPdf}
+                      className="h-9 px-3 text-xs flex items-center gap-1.5 border-emerald-300 text-emerald-800 hover:bg-emerald-50"
+                      title="Download PDF Invoice file"
+                    >
+                      <Download className="size-4 text-emerald-600" />
+                      Download PDF
+                    </Button>
                     {!activeBill.reservation.isFinalized && (
                       <Button
                         variant="primary"
@@ -992,6 +1080,18 @@ export default function BillingPage() {
                 <span>Balance Due:</span>
                 <span>Rs. {Number(activeBill?.financials?.balanceDue || 0).toLocaleString()}</span>
               </div>
+            </div>
+            <div className="space-y-1">
+              <label className="block text-xs font-bold text-ink">
+                Custom Invoice Number <span className="text-muted font-normal">(optional, auto-generated if blank)</span>
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. INV-RFH-2026-001"
+                value={customInvoiceNumber}
+                onChange={(e) => setCustomInvoiceNumber(e.target.value)}
+                className="w-full rounded-xl border border-line p-2 text-xs bg-white"
+              />
             </div>
             <div className="flex justify-end gap-2 pt-2 border-t border-line">
               <Button variant="outline" onClick={() => setCheckoutModalOpen(false)}>
