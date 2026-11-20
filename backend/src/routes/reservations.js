@@ -7,6 +7,7 @@ const asyncHandler = require("../utils/asyncHandler");
 const parseId = require("../utils/parseId");
 const validate = require("../middleware/validate");
 const { authenticate: staff } = require("../middleware/auth"); // any logged-in staff member
+const { hashPassword } = require("../services/passwords");
 
 const router = express.Router();
 
@@ -154,5 +155,61 @@ router.patch("/:id/status", staff, validate(statusSchema), asyncHandler(async (r
   res.json(await prisma.reservation.update({ where: { id: r.id }, data: { status, cancelReason: reason }, ...show }));
 }));
 
+// ---------- Check-in and check-out ----------
+// Check-in: staff choose the guest's portal password. It switches the guest portal on.
+const passwordSchema = z.object({ portalPassword: z.string().min(6).max(72) });
+router.post("/:id/check-in", staff, validate(passwordSchema), asyncHandler(async (req, res) => {
+  const r = await find(parseId(req.params.id));
+  if (!["PENDING", "CONFIRMED"].includes(r.status)) {
+    throw new HttpError(409, "Only a pending or confirmed reservation can be checked in", "INVALID_STATUS");
+  }
+  if (await prisma.reservation.findFirst({ where: { status: "CHECKED_IN" } })) {
+    throw new HttpError(409, "Another guest is still checked in", "CABANA_OCCUPIED");
+  }
+
+  const [reservation] = await prisma.$transaction([
+    prisma.reservation.update({
+      where: { id: r.id },
+      data: {
+        status: "CHECKED_IN",
+        checkedInAt: new Date(),
+        portalActive: true,
+        mustChangePassword: true,
+        portalPasswordHash: await hashPassword(req.body.portalPassword),
+      },
+      ...show,
+    }),
+    prisma.cabana.update({ where: { id: r.cabanaId }, data: { status: "OCCUPIED" } }),
+  ]);
+  // The QR code only contains this address, never any guest or stay data
+  res.json({ ...reservation, loginUrl: `${process.env.FRONTEND_URL || "http://localhost:3000"}/guest/login` });
+}));
+
+// Check-out: closes the stay and switches the guest portal off
+router.post("/:id/check-out", staff, asyncHandler(async (req, res) => {
+  const r = await find(parseId(req.params.id));
+  if (r.status !== "CHECKED_IN") throw new HttpError(409, "Only a checked-in guest can be checked out", "INVALID_STATUS");
+
+  const [reservation] = await prisma.$transaction([
+    prisma.reservation.update({
+      where: { id: r.id },
+      data: { status: "CHECKED_OUT", checkedOutAt: new Date(), portalActive: false },
+      ...show,
+    }),
+    prisma.cabana.update({ where: { id: r.cabanaId }, data: { status: "AVAILABLE" } }),
+  ]);
+  res.json(reservation);
+}));
+
+// A guest forgot the password: staff set a new one (only while the guest is checked in)
+router.post("/:id/portal-password", staff, validate(passwordSchema), asyncHandler(async (req, res) => {
+  const r = await find(parseId(req.params.id));
+  if (r.status !== "CHECKED_IN") throw new HttpError(409, "The guest is not checked in", "INVALID_STATUS");
+  await prisma.reservation.update({
+    where: { id: r.id },
+    data: { portalPasswordHash: await hashPassword(req.body.portalPassword), mustChangePassword: true },
+  });
+  res.json({ message: "Password changed" });
+}));
 
 module.exports = router;
